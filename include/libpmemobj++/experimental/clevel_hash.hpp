@@ -42,6 +42,7 @@
 #include <sstream>
 #include <fstream>
 #include <immintrin.h>
+#include <map>
 
 #if _MSC_VER
 #include <intrin.h>
@@ -110,12 +111,16 @@ public:
 	struct level_bucket;
 	struct level_meta;
 
+	struct level_bucket_D;
+	struct level_meta_D;		//adapted
 
-	using KV_entry_ptr_t = detail::compound_pool_ptr<value_type>;
+	using KV_entry_ptr_t = detail::compound_pool_ptr<value_type>;	
 
 	using level_ptr_t = detail::compound_pool_ptr<level_bucket>;
+	using level_ptr_t_D = level_bucket_D *;
 
 	using level_meta_ptr_t = detail::compound_pool_ptr<level_meta>;
+	using level_meta_ptr_t_D = level_meta_D *;
 
 #if LIBPMEMOBJ_CPP_USE_TBB_RW_MUTEX
 	using mutex_t = pmem::obj::experimental::v<tbb::spin_rw_mutex>;
@@ -211,8 +216,10 @@ public:
 	{
 		KV_entry_ptr_t p;
 		struct {
-			char padding[6];
 			partial_t partial;
+			uint8_t version;
+			uint8_t valid;
+			char padding[4];
 		}x;
 
 		KV_entry_ptr_u() : p(nullptr)
@@ -224,10 +231,26 @@ public:
 		}
 	};
 
+	union KV_entry_ptr_u_D
+	{
+		hv_type hv;
+		struct {
+			partial_t partial;
+			uint8_t version;
+			uint8_t valid;
+			char padding[4];
+		}x;
+	};		//adapted
+
 	struct bucket
 	{
 		KV_entry_ptr_u slots[assoc_num];
 	};
+
+	struct bucket_D
+	{
+		KV_entry_ptr_u_D slots[assoc_num];
+	};		//adapted
 
 	struct level_bucket
 	{
@@ -246,20 +269,67 @@ public:
 		}
 	};
 
+	struct level_bucket_D
+	{
+		bucket_D * buckets;
+		uint64_t capacity;
+		level_ptr_t_D up;
+		level_bucket * oppo;
+
+		void
+		clear()
+		{
+			if (buckets)
+			{
+				delete [] buckets;
+				buckets = nullptr;
+			}
+		}
+	};		//adapted
+
 	struct level_meta
 	{
 		level_ptr_t first_level;
 		level_ptr_t last_level;
 		p<bool> is_resizing;
+		p<bool> is_caching;	//adapted
+		p<uint8_t> version;	//adapted
 
 		level_meta()
 		{
 			first_level = nullptr;
 			last_level = nullptr;
 			is_resizing = false;
+			is_caching = false;
+			version = 0;
 		}
-
+		//TODO
 		level_meta(const level_ptr_t &fl, const level_ptr_t &ll, bool flag)
+		{
+			first_level = fl;
+			last_level = ll;
+			is_resizing = flag;
+		}
+	};
+
+	struct level_meta_D
+	{
+		level_ptr_t_D first_level;
+		level_ptr_t_D last_level;
+		bool is_resizing;
+		bool is_caching;	//adapted
+		uint8_t version;	//adapted
+
+		level_meta_D()
+		{
+			first_level = nullptr;
+			last_level = nullptr;
+			is_resizing = false;
+			is_caching = false;
+			version = 0;
+		}
+		//TODO
+		level_meta_D(const level_ptr_t &fl, const level_ptr_t &ll, bool flag)
 		{
 			first_level = fl;
 			last_level = ll;
@@ -276,6 +346,7 @@ public:
 	}
 
 	clevel_hash() : meta(make_persistent<level_meta>().raw().off),
+		meta_D(new level_meta_D()),
 		thread_num(0)
 	{
 		std::cout << "clevel_hash constructor: HashPower = "
@@ -306,6 +377,22 @@ public:
 		m->last_level.off = tmp.raw().off;
 
 		m->is_resizing = false;
+		m->is_caching = false;
+
+		level_ptr_t_D tmp_D = new level_bucket_D();
+		tmp_D->buckets = new bucket_D[pow(2, hashpower)];
+		tmp_D->capacity = pow(2, hashpower);
+		tmp->up = nullptr;
+		meta_D->first_level = tmp_D;
+
+		level_ptr_t_D tmp_D = new level_bucket_D();
+		tmp_D->buckets = new bucket_D[pow(2, hashpower - 1)];
+		tmp_D->capacity = pow(2, hashpower - 1);
+		tmp_D->up = meta_D->first_level;
+		meta_D->last_level = tmp_D;
+
+		meta_D->is_resizing = false;
+		meta_D->is_caching = false;
 
 		run_expand_thread.get_rw().store(true);
 		expand_bucket = 0;
@@ -512,6 +599,12 @@ public:
 		size_type thread_id, level_meta_ptr_t &m_copy);
 
 	f_code_t
+	find(const key_type &key, partial_t partial,
+		size_type &n_levels,
+		uint64_t &level_num, difference_type &idx, bool fix_dup,
+		size_type thread_id, level_meta_ptr_t_D &m_copy);
+
+	f_code_t
 	find_empty_slot(pool_base &pop, const key_type &key, partial_t partial,
 		size_type &n_levels, KV_entry_ptr_t **e,
 		uint64_t &level_num, level_meta_ptr_t &m_copy);
@@ -523,6 +616,7 @@ public:
 	resize();
 
 	level_meta_ptr_t meta;
+	level_meta_ptr_t_D meta_D;			//adapted
 
 	p<size_type> hashpower;
 	p<size_type> thread_num;
@@ -540,69 +634,133 @@ public:
 #ifdef CLEVEL_DEBUG
 	std::vector<std::fstream> thread_logs;
 #endif
+
+private:
+	map<level_bucket *, level_bucket_D *> levelmap;
 };
 
 template <typename Key, typename T, typename Hash, typename KeyEqual,
 	size_t HashPower>
 typename clevel_hash<Key, T, Hash, KeyEqual, HashPower>::ret
-clevel_hash<Key, T, Hash, KeyEqual, HashPower>::search(
+clevel_hash<Key, T, Hash, KeyEqual, HashPower>::search(		//adapted
 	const key_type &key) const
 {
 	hv_type hv = hasher{}(key);
 	partial_t partial = get_partial(hv);
 
-	while(true)
+	if (meta_D->is_caching)
 	{
-		level_meta_ptr_t m_copy(meta);
-		level_meta *m = static_cast<level_meta *>(m_copy(my_pool_uuid));
-
-		// Bottom-to-top search.
-		difference_type f_idx, s_idx;
-		size_type i = 0;
-		level_ptr_t li = nullptr, next_li = m->last_level;
-		do
+		while(true)
 		{
-			li = next_li;
-			level_bucket *cl = li.get_address(my_pool_uuid);
-			f_idx = first_index(hv, cl->capacity);
-			s_idx = second_index(partial, f_idx, cl->capacity);
+			level_meta_ptr_t m_copy(meta);
+			level_meta *m = static_cast<level_meta *>(m_copy(my_pool_uuid));
 
-			bucket &f_b = cl->buckets[f_idx];
-			for (size_type j = 0; j < assoc_num; j++)
+			// Bottom-to-top search.
+			difference_type f_idx, s_idx;
+			size_type i = 0;
+			level_ptr_t li = nullptr, next_li = m->last_level;
+			do
 			{
-				if (f_b.slots[j].x.partial == partial
-					&& f_b.slots[j].p.get_offset() != 0)
+				li = next_li;
+				level_bucket *cl = li.get_address(my_pool_uuid);
+				f_idx = first_index(hv, cl->capacity);
+				s_idx = second_index(partial, f_idx, cl->capacity);
+
+				bucket &f_b = cl->buckets[f_idx];
+				for (size_type j = 0; j < assoc_num; j++)
 				{
-					if (key_equal{}(
-						f_b.slots[j].p.get_address(my_pool_uuid)->first, key))
+					if (f_b.slots[j].x.partial == partial
+						&& f_b.slots[j].p.get_offset() != 0)
 					{
-						return ret(i, f_idx, j);
+						if (key_equal{}(
+							f_b.slots[j].p.get_address(my_pool_uuid)->first, key))
+						{
+							return ret(i, f_idx, j);
+						}
 					}
 				}
-			}
 
-			bucket &s_b = cl->buckets[s_idx];
-			for (size_type j = 0; j < assoc_num; j++)
-			{
-				if (s_b.slots[j].x.partial == partial
-					&& s_b.slots[j].p.get_offset() != 0)
+				bucket &s_b = cl->buckets[s_idx];
+				for (size_type j = 0; j < assoc_num; j++)
 				{
-					if (key_equal{}(
-						s_b.slots[j].p.get_address(my_pool_uuid)->first, key))
+					if (s_b.slots[j].x.partial == partial
+						&& s_b.slots[j].p.get_offset() != 0)
 					{
-						return ret(i, s_idx, j);
+						if (key_equal{}(
+							s_b.slots[j].p.get_address(my_pool_uuid)->first, key))
+						{
+							return ret(i, s_idx, j);
+						}
 					}
 				}
-			}
 
-			next_li = cl->up;
-			i++;
-		}while(li != m->first_level);
+				next_li = cl->up;
+				i++;
+			}while(li != m->first_level);
 
-		// Context checking.
-		if (m_copy == meta)
-			return ret();
-	} // end while(true)
+			// Context checking.
+			if (m_copy == meta)
+				return ret();
+		} // end while(true)
+	}
+
+	else 
+	{
+		while(true) 
+		{
+			level_meta_ptr_t_D m_D(meta_D);
+
+			// Bottom-to-top search.
+			difference_type f_idx, s_idx;
+			size_type i = 0;
+			level_ptr_t_D li = nullptr, next_li = m_D->last_level;
+			do
+			{
+				li = next_li;
+				f_idx = first_index(hv, cl->capacity);
+				s_idx = second_index(partial, f_idx, cl->capacity);
+
+				bucket_D &f_b = li->buckets[f_idx];
+				for (size_type j = 0; j < assoc_num; j++)
+				{
+					if (f_b.slots[j].x.valid
+						&& f_b.slots[j].hv == hv) 
+					{
+						if (key_equal{}(
+							li->oppo->buckets[f_idx].slots[j].p.get_address(my_pool_uuid)->first,
+							key
+						))
+						{
+							return ret(i, f_idx, j);
+						}
+					}
+				}
+
+				bucket_D &s_b = li->buckets[s_idx];
+				for (size_type j = 0; j < assoc_num; j++)
+				{
+					if (s_b.slots[j].x.valid
+						&& s_b.slots[j].hv == hv) 
+					{
+						if (key_equal{}(
+							li->oppo->buckets[s_idx].slots[j].p.get_address(my_pool_uuid)->first,
+							key
+						))
+						{
+							return ret(i, s_idx, j);
+						}
+					}
+				}
+
+				next_li = li->up;
+				i++;
+			}while(li != m->first_level)
+
+			// Context checking
+			if (m_D == meta_D)
+				return ret();
+		}
+	}
 }
 
 template <typename Key, typename T, typename Hash, typename KeyEqual,
@@ -977,6 +1135,26 @@ RETRY_FIND:
 		}
 	} // end while
 }
+
+template <typename Key, typename T, typename Hash, typename KeyEqual,
+	size_t HashPower>
+typename clevel_hash<Key, T, Hash, KeyEqual, HashPower>::f_code_t
+clevel_hash<Key, T, Hash, KeyEqual, HashPower>::find(
+	const key_type &key, partial_t partial,
+	size_type &n_levels,
+	uint64_t &level_num, difference_type &idx, bool fix_dup,
+	size_type thread_id, level_meta_ptr_t &m_copy)
+{
+	hv_type hv = hasher{}(key);
+
+	while (true)
+	{
+RETRY_FIND:
+		level_meta_D *m = m_copy;
+		
+	}
+}
+
 
 template <typename Key, typename T, typename Hash, typename KeyEqual,
 	size_t HashPower>
