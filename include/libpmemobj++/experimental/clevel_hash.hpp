@@ -304,11 +304,14 @@ public:
 			version = 0;
 		}
 		//TODO
-		level_meta(const level_ptr_t &fl, const level_ptr_t &ll, bool flag)
+		level_meta(const level_ptr_t &fl, const level_ptr_t &ll, 
+		bool flag, bool cache, uint8_t v)
 		{
 			first_level = fl;
 			last_level = ll;
 			is_resizing = flag;
+			is_caching = cache;
+			version = v;
 		}
 	};
 
@@ -329,11 +332,14 @@ public:
 			version = 0;
 		}
 		//TODO
-		level_meta_D(const level_ptr_t &fl, const level_ptr_t &ll, bool flag)
+		level_meta_D(const level_ptr_t_D &fl, const level_ptr_t_D &ll, 
+		bool flag, bool cache, uint8_t v)
 		{
 			first_level = fl;
 			last_level = ll;
 			is_resizing = flag;
+			is_caching = cache;
+			version = v;
 		}
 	};
 
@@ -590,24 +596,20 @@ public:
 
 	void
 	del_dup(pool_base &pop, KV_entry_ptr_u *p1, KV_entry_ptr_u *p2,
-		KV_entry_ptr_t e1, KV_entry_ptr_t e2);
+		KV_entry_ptr_t e1, KV_entry_ptr_t e2, KV_entry_ptr_u_D *prev_D);
 
 	f_code_t
 	find(pool_base &pop, const key_type &key, partial_t partial,
 		size_type &n_levels, KV_entry_ptr_t &old_e, KV_entry_ptr_t **e,
 		uint64_t &level_num, difference_type &idx, bool fix_dup,
-		size_type thread_id, level_meta_ptr_t &m_copy);
-
-	f_code_t
-	find(const key_type &key, partial_t partial,
-		size_type &n_levels,
-		uint64_t &level_num, difference_type &idx, bool fix_dup,
-		size_type thread_id, level_meta_ptr_t_D &m_copy);
+		size_type thread_id, level_meta_ptr_t &m_copy, KV_entry_ptr_u * &tar,
+		KV_entry_ptr_u_D * &tar_D);
 
 	f_code_t
 	find_empty_slot(pool_base &pop, const key_type &key, partial_t partial,
 		size_type &n_levels, KV_entry_ptr_t **e,
-		uint64_t &level_num, level_meta_ptr_t &m_copy);
+		uint64_t &level_num, level_meta_ptr_t &m_copy, KV_entry_ptr_u * &tar,
+		KV_entry_ptr_u_D * &tar_D);
 
 	void
 	expand(pool_base &pop, size_type thread_id, level_meta_ptr_t m_copy);
@@ -768,7 +770,7 @@ template <typename Key, typename T, typename Hash, typename KeyEqual,
 void
 clevel_hash<Key, T, Hash, KeyEqual, HashPower>::del_dup(
 	pool_base &pop, KV_entry_ptr_u *p1, KV_entry_ptr_u *p2,
-	KV_entry_ptr_t e1, KV_entry_ptr_t e2)
+	KV_entry_ptr_t e1, KV_entry_ptr_t e2, KV_entry_ptr_u_D *prev_D)
 {
 	KV_entry_ptr_u tmp1_u, tmp2_u;
 	tmp1_u.p = e1;
@@ -809,7 +811,8 @@ typename clevel_hash<Key, T, Hash, KeyEqual, HashPower>::f_code_t
 clevel_hash<Key, T, Hash, KeyEqual, HashPower>::find_empty_slot(
 	pool_base &pop, const key_type &key, partial_t partial,
 	size_type &n_levels, KV_entry_ptr_t **e,
-	uint64_t &level_num, level_meta_ptr_t &m_copy)
+	uint64_t &level_num, level_meta_ptr_t &m_copy, KV_entry_ptr_u * &tar,
+	KV_entry_ptr_u_D * &tar_D)
 {
 	hv_type hv = hasher{}(key);
 	while (true)
@@ -839,6 +842,7 @@ clevel_hash<Key, T, Hash, KeyEqual, HashPower>::find_empty_slot(
 		for (size_type i = n_levels - 1; i < n_levels; i--)
 		{
 			cl = levels[i].get_address(my_pool_uuid);
+			cl_D = levelmap.find(cl)->second;
 			f_idx = first_index(hv, cl->capacity);
 			s_idx = second_index(partial, f_idx, cl->capacity);
 
@@ -854,6 +858,8 @@ clevel_hash<Key, T, Hash, KeyEqual, HashPower>::find_empty_slot(
 
 					result = VACANCY_IN_LEFT;
 					*e = &(f_b.slots[j].p);
+					tar = &f_b.slot[j];
+					tar_D = &cl_D->buckets[f_idx].slot[j];
 					level_num = i;
 					slot_idx = j;
 				}
@@ -876,6 +882,8 @@ clevel_hash<Key, T, Hash, KeyEqual, HashPower>::find_empty_slot(
 
 					result = VACANCY_IN_RIGHT;
 					*e = &(s_b.slots[j].p);
+					tar = &s_b.slot[j];
+					tar_D = &cl_D->buckets[s_idx].slot[j];
 					level_num = i;
 					slot_idx = j;
 				}
@@ -905,7 +913,8 @@ clevel_hash<Key, T, Hash, KeyEqual, HashPower>::find(
 	pool_base &pop, const key_type &key, partial_t partial,
 	size_type &n_levels, KV_entry_ptr_t &old_e, KV_entry_ptr_t **e,
 	uint64_t &level_num, difference_type &idx, bool fix_dup,
-	size_type thread_id, level_meta_ptr_t &m_copy)
+	size_type thread_id, level_meta_ptr_t &m_copy, KV_entry_ptr_u * &tar,
+	KV_entry_ptr_u_D * &tar_D)
 {
 	hv_type hv = hasher{}(key);
 
@@ -919,6 +928,7 @@ RETRY_FIND:
 		difference_type f_idx, s_idx;
 		KV_entry_ptr_t f_e, s_e;
 		uint64_t slot_idx;
+		KV_entry_ptr_u_D *prev_D;
 
 		f_code_t result;
 		KV_entry_ptr_t prev_e;
@@ -935,12 +945,14 @@ RETRY_FIND:
 		} while(li != m->first_level);
 
 		level_bucket *cl;
+		level_bucket_D *cl_D;
 		result = ABSENT_AND_NO_VACANCY;
 
 		// Bottom-to-top search.
 		for (size_type i = 0; i < n_levels; i++)
 		{
 			cl = levels[i].get_address(my_pool_uuid);
+			cl_D = levelmap.find(cl)->second;
 			f_idx = first_index(hv, cl->capacity);
 			s_idx = second_index(partial, f_idx, cl->capacity);
 
@@ -963,6 +975,8 @@ RETRY_FIND:
 						result = VACANCY_IN_LEFT;
 						old_e = f_e;
 						*e = &(f_b.slots[j].p);
+						tar = &f_b.slot[j];
+						tar_D = &cl_D->buckets[f_idx].slot[j];
 						level_num = i;
 						idx = f_idx;
 						slot_idx = j;
@@ -997,7 +1011,7 @@ RETRY_FIND:
 						{
 							del_dup(pop, &f_b.slots[j], &(levels[level_num]
 								.get_address(my_pool_uuid)->buckets[idx]
-								.slots[slot_idx]), f_e, prev_e);
+								.slots[slot_idx]), f_e, prev_e, prev_D);
 						}
 						else
 						{
@@ -1013,7 +1027,7 @@ RETRY_FIND:
 						// duplication, simply delete the previous item.
 						del_dup(pop, &f_b.slots[j], &(levels[level_num]
 							.get_address(my_pool_uuid)->buckets[idx]
-							.slots[slot_idx]), f_e, prev_e);
+							.slots[slot_idx]), f_e, prev_e, prev_D);
 					}
 					goto RETRY_FIND;
 				}
@@ -1028,6 +1042,10 @@ RETRY_FIND:
 
 					prev_e = f_e;
 					prev_i = i;
+
+					prev_D = &(levelmap.find(levels[level_num]
+							.get_address(my_pool_uuid))->second->
+							buckets[idx].slots[slot_idx]);
 				} // end if result in FOUND_IN_LEFT or FOUND_IN_RIGHT
 			} // end for j, f_idx, f_b
 
@@ -1053,6 +1071,8 @@ RETRY_FIND:
 						result = VACANCY_IN_RIGHT;
 						old_e = s_e;
 						*e = &(s_b.slots[j].p);
+						tar = &s_b.slot[j];
+						tar_D = &cl_D->buckets[s_idx].slot[j];
 						level_num = i;
 						idx = s_idx;
 						slot_idx = j;
@@ -1087,7 +1107,7 @@ RETRY_FIND:
 						{
 							del_dup(pop, &s_b.slots[j], &(levels[level_num]
 								.get_address(my_pool_uuid)->buckets[idx]
-								.slots[slot_idx]), s_e, prev_e);
+								.slots[slot_idx]), s_e, prev_e, prev_D);
 						}
 						else
 						{
@@ -1103,7 +1123,7 @@ RETRY_FIND:
 						// duplication, simply delete the previous item.
 						del_dup(pop, &s_b.slots[j], &(levels[level_num]
 							.get_address(my_pool_uuid)->buckets[idx]
-							.slots[slot_idx]), s_e, prev_e);
+							.slots[slot_idx]), s_e, prev_e, prev_D);
 					}
 					goto RETRY_FIND;
 				}
@@ -1118,6 +1138,10 @@ RETRY_FIND:
 
 					prev_e = s_e;
 					prev_i = i;
+
+					prev_D = &(levelmap.find(levels[level_num]
+							.get_address(my_pool_uuid))->second->
+							buckets[idx].slots[slot_idx]);
 				} // end if result in FOUND_IN_LEFT or FOUND_IN_RIGHT
 			} // end for j, s_idx, s_b
 
@@ -1135,26 +1159,6 @@ RETRY_FIND:
 		}
 	} // end while
 }
-
-template <typename Key, typename T, typename Hash, typename KeyEqual,
-	size_t HashPower>
-typename clevel_hash<Key, T, Hash, KeyEqual, HashPower>::f_code_t
-clevel_hash<Key, T, Hash, KeyEqual, HashPower>::find(
-	const key_type &key, partial_t partial,
-	size_type &n_levels,
-	uint64_t &level_num, difference_type &idx, bool fix_dup,
-	size_type thread_id, level_meta_ptr_t &m_copy)
-{
-	hv_type hv = hasher{}(key);
-
-	while (true)
-	{
-RETRY_FIND:
-		level_meta_D *m = m_copy;
-		
-	}
-}
-
 
 template <typename Key, typename T, typename Hash, typename KeyEqual,
 	size_t HashPower>
@@ -1214,20 +1218,24 @@ RETRY_INSERT:
 		uint64_t level_num = 0;
 		difference_type idx;
 		KV_entry_ptr_t *e, old_e;
+		KV_entry_ptr_u *tar;
+		KV_entry_ptr_u_D *tar_D;
 		f_code_t result;
 		if (check_duplicate)
 		{
 			result = find(pop, key, partial, n_levels,
-				old_e, &e, level_num, idx, /*fix_dup=*/false, thread_id, m_copy);
+				old_e, &e, level_num, idx, /*fix_dup=*/false, thread_id, m_copy,
+				tar, tar_D);
 		}
 		else
 		{
 			result = find_empty_slot(pop, key, partial, n_levels,
-				&e, level_num, m_copy);
+				&e, level_num, m_copy, tar, tar_D);
 		}
 
 
 		level_meta *m = static_cast<level_meta *>(m_copy(my_pool_uuid));
+		uint8_t version = m->version.get_ro();
 
 		if (result == FOUND_IN_LEFT || result == FOUND_IN_RIGHT)
 		{
@@ -1239,6 +1247,15 @@ RETRY_INSERT:
 		{
 			if (CAS(&(e->off), old_e.raw(), created.p.raw()))
 			{
+				tar->x.partial = partial;
+				tar->x.version = version;
+				tar->x.valid = 1;
+
+				tar_D->hv = hv;
+				tar_D->x.partial = partial;
+				tar_D->x.version = version;
+				tar_D->x.valid = 1;
+
 				if (!m->is_resizing && meta(my_pool_uuid)->is_resizing &&
 					level_num == 0)
 				{
@@ -1474,8 +1491,11 @@ clevel_hash<Key, T, Hash, KeyEqual, HashPower>::expand(
 )
 {
 	level_meta *m = static_cast<level_meta *>(m_copy(my_pool_uuid));
+	level_meta_ptr_t_D m_copy_D(meta_D);
 	difference_type t_id = static_cast<difference_type>(thread_id);
 	level_bucket *cl = m->first_level.get_address(my_pool_uuid);
+	bool cache = m->is_caching.get_ro();
+	uint8_t v = m->version.get_ro();
 
 	if (cl->up == nullptr)
 	{
@@ -1506,6 +1526,20 @@ clevel_hash<Key, T, Hash, KeyEqual, HashPower>::expand(
 
 			delete_persistent_atomic<level_bucket>(tmp_level[t_id]);
 		}
+		else
+		{	
+			//the thread which finished expanding finishes the expanding in DRAM
+			level_ptr_t_D new_level = new level_bucket_D;
+			new_level->capacity = new_capacity;
+			new_level->up = nullptr;
+			new_level->oppo = static_cast<level_bucket *>(cl->up(my_pool_uuid));
+			new_level->buckets = new bucket_D[new_capacity];
+			m_copy_D->first_level = new_level;
+			level_meta_ptr_t_D tmp_meta_copy = new level_meta_D(new_level, 
+			m_copy_D->last_level, true, cache, v);
+			CAS(&meta_D, m_copy_D, tmp_meta_copy);
+			levelmap.insert(pair<level_bucket *, level_bucket_D *>(new_level->oppo, new_level));
+		}
 
 		pop.persist(&(cl->up.off), sizeof(uint64_t));
 
@@ -1516,13 +1550,13 @@ clevel_hash<Key, T, Hash, KeyEqual, HashPower>::expand(
 			{
 				// Help updating meta
 				make_persistent_atomic<level_meta>(pop, tmp_meta[t_id],
-					m->first_level, m->last_level, true);
+					m->first_level, m->last_level, true, cache, v);
 			}
 			else
 			{
 				assert(cl->up != nullptr);
 				make_persistent_atomic<level_meta>(pop, tmp_meta[t_id],
-					cl->up, m->last_level, true);
+					cl->up, m->last_level, true, cache, v);
 			}
 
 			if (CAS(&(meta.off), m_copy.off, tmp_meta[t_id].raw().off))
@@ -1552,7 +1586,7 @@ clevel_hash<Key, T, Hash, KeyEqual, HashPower>::expand(
 	}
 	else
 	{
-		// Ohter threads finished expanding
+		// Other threads finished expanding
 		pop.persist(&(cl->up.off), sizeof(uint64_t));
 
 		if (meta == m_copy)
@@ -1566,13 +1600,13 @@ clevel_hash<Key, T, Hash, KeyEqual, HashPower>::expand(
 				if (cl->capacity >= new_capacity)
 				{
 					make_persistent_atomic<level_meta>(pop, tmp_meta[t_id],
-						m->first_level, m->last_level, true);
+						m->first_level, m->last_level, true, cache, v);
 				}
 				else
 				{
 					assert(cl->up != nullptr);
 					make_persistent_atomic<level_meta>(pop, tmp_meta[t_id],
-						cl->up, m->last_level, true);
+						cl->up, m->last_level, true, cache, v);
 				}
 
 				if (CAS(&(meta.off), m_copy.off, tmp_meta[t_id].raw().off))
@@ -1615,6 +1649,7 @@ clevel_hash<Key, T, Hash, KeyEqual, HashPower>::resize()
 	while (run_expand_thread.get_ro().load())
 	{
 		level_meta_ptr_t m_copy(meta);
+		level_meta_ptr_t_D m_D(meta_D);
 		pop.persist(&(meta.off), sizeof(uint64_t));
 
 		level_meta *m = static_cast<level_meta *>(m_copy(my_pool_uuid));
@@ -1638,15 +1673,23 @@ clevel_hash<Key, T, Hash, KeyEqual, HashPower>::resize()
 RETRY_REHASH:
 			m_copy = level_meta_ptr_t(meta);
 			pop.persist(&(meta.off), sizeof(uint64_t));
+			m_D = meta_D;
 
 			m = static_cast<level_meta *>(m_copy(my_pool_uuid));
+			bool cache = m->is_caching.get_ro();
+			uint8_t version = m->version.get_ro();
+
 			level_bucket *bl = m->last_level.get_address(my_pool_uuid);
 			level_bucket *tl = m->first_level.get_address(my_pool_uuid);
+			level_ptr_t_D *bl_D = m_D->last_level;
+			level_ptr_t_D *tl_D = m_D->first_level;
 
 			bucket &b = bl->buckets[expand_bucket.get_ro()];
+			bucket_D &b_D = bl_D->buckets[expand_bucket.get_ro()];
 			for (size_type slot_idx = 0; slot_idx < assoc_num; slot_idx++)
 			{
 				KV_entry_ptr_t src_tmp = b.slots[slot_idx].p;
+				uint8_t v = b.slots[slot_idx].x.version;
 				value_type *e = src_tmp.get_address(my_pool_uuid);
 				if (e == nullptr)
 					continue;
@@ -1660,6 +1703,8 @@ RETRY_REHASH:
 
 				bucket &dst_b1 = tl->buckets[f_idx];
 				bucket &dst_b2 = tl->buckets[s_idx];
+				bucket_D &dst_b1_D = tl_D->buckets[f_idx];
+				bucket_D &dst_b2_D = tl_D->buckets[s_idx];
 				for (size_type j = 0; j < assoc_num; j++)
 				{
 					// The rehashed item is inserted into the less-loaded
@@ -1673,10 +1718,22 @@ RETRY_REHASH:
 						{
 							pop.persist(&(dst_b1.slots[j].p.off),
 								sizeof(uint64_t));
+							dst_b1.slots[j].x.version = v;
+							pop.persist(&(dst_b1.slots[j].x.version),
+								sizeof(uint8_t));
+							dst_b1.slots[j].x.partial = partial;
+							dst_b1.slots[j].x.valid = 1;
+							
+							dst_b1.slots[j].hv = hv;
+							dst_b1.slots[j].x.partial = partial;
+							dst_b1.slots[j].x.version = v;
+							dst_b1.slots[j].x.valid = 1;
 
+							b_D.slots[slot_idx].x.valid = 0;
 							b.slots[slot_idx].p = nullptr;
 							pop.persist(&(b.slots[slot_idx].p.off),
 								sizeof(uint64_t));
+
 							succ = true;
 							break;
 						}
@@ -1690,7 +1747,18 @@ RETRY_REHASH:
 						{
 							pop.persist(&(dst_b2.slots[j].p.off),
 								sizeof(uint64_t));
+							dst_b2.slots[j].x.version = v;
+							pop.persist(&(dst_b2.slots[j].x.version),
+								sizeof(uint8_t));
+							dst_b2.slots[j].x.partial = partial;
+							dst_b2.slots[j].x.valid = 1;
+							
+							dst_b2.slots[j].hv = hv;
+							dst_b2.slots[j].x.partial = partial;
+							dst_b2.slots[j].x.version = v;
+							dst_b2.slots[j].x.valid = 1;
 
+							b_D.slots[slot_idx].x.valid = 0;
 							b.slots[slot_idx].p = nullptr;
 							pop.persist(&(b.slots[slot_idx].p.off),
 								sizeof(uint64_t));
@@ -1722,8 +1790,10 @@ RETRY_REHASH:
 						levels_left++;
 						li = li.get_address(my_pool_uuid)->up;
 					}
+					li = m->last_level;
+					level_ptr_t_D li_D = m_D->last_level;
 					make_persistent_atomic<level_meta>(pop, tmp_meta[t_id],
-						m->first_level, bl->up, levels_left != 2);
+						m->first_level, bl->up, levels_left != 2, cache, version);
 
 					if (CAS(&(meta.off), m_copy.off, tmp_meta[t_id].raw().off))
 					{
@@ -1733,6 +1803,18 @@ RETRY_REHASH:
 							<< std::endl;
 						pop.persist(&(meta.off), sizeof(uint64_t));
 
+						level_meta_ptr_t_D tmp_meta_copy = new level_meta_D(m_D->fisrt_level, 
+						m_D->last_level->up, true, cache, v);
+						CAS(&meta_D, m_D, tmp_meta_copy);
+
+						levelmap.erase(li.get_address(my_pool_uuid));
+
+						delete_persistent_atomic<bucket[]>(
+						li->buckets, li->capacity.get_ro());
+						delete_persistent_atomic<level_bucket>(li);
+					
+						delete [] li_D->buckets;
+						delete li_D;
 						expand_bucket.get_rw() = 0;
 						pop.persist(expand_bucket);
 
@@ -1745,6 +1827,7 @@ RETRY_REHASH:
 						m_copy = level_meta_ptr_t(meta);
 						pop.persist(&(meta.off), sizeof(uint64_t));
 						m = static_cast<level_meta *>(m_copy(my_pool_uuid));
+						m_D = meta_D;
 					}
 				}
 
