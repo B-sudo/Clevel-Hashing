@@ -1817,7 +1817,7 @@ RETRY_REHASH:
 						delete_persistent_atomic<bucket[]>(
 						li.get_address(my_pool_uuid)->buckets,
 						 li.get_address(my_pool_uuid)->capacity.get_ro());
-						delete_persistent_atomic<level_bucket>(li);
+						//delete_persistent_atomic<level_bucket>(li);
 					
 						delete [] li_D->buckets;
 						delete li_D;
