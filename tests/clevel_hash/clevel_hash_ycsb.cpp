@@ -219,8 +219,10 @@ main(int argc, char *argv[])
 	double* latency_queue[thread_num];
     int move[thread_num];
     for(size_t t = 0; t < thread_num; t ++){
-        run_queue[t] = (thread_queue *)calloc(READ_WRITE_NUM / thread_num + 1, sizeof(thread_queue));
-		latency_queue[t] = (double *)calloc(READ_WRITE_NUM / thread_num + 1, sizeof(double));
+        //run_queue[t] = (thread_queue *)calloc(READ_WRITE_NUM / thread_num + 1, sizeof(thread_queue));
+		//latency_queue[t] = (double *)calloc(READ_WRITE_NUM / thread_num + 1, sizeof(double));
+		run_queue[t] = new thread_queue[READ_WRITE_NUM / thread_num + 1];
+        latency_queue[t] = new double[READ_WRITE_NUM / thread_num + 1];
         move[t] = 0;
     }
 
