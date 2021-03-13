@@ -757,7 +757,7 @@ clevel_hash<Key, T, Hash, KeyEqual, HashPower>::search(		//adapted
 
 				next_li_D = li_D->up;
 				i++;
-			}while(li != m_D->first_level);
+			}while(li_D != m_D->first_level);
 
 			// Context checking
 			if (m_D == meta_D)
@@ -1686,8 +1686,8 @@ RETRY_REHASH:
 
 			level_bucket *bl = m->last_level.get_address(my_pool_uuid);
 			level_bucket *tl = m->first_level.get_address(my_pool_uuid);
-			level_ptr_t_D *bl_D = m_D->last_level;
-			level_ptr_t_D *tl_D = m_D->first_level;
+			level_ptr_t_D bl_D = m_D->last_level;
+			level_ptr_t_D tl_D = m_D->first_level;
 
 			bucket &b = bl->buckets[expand_bucket.get_ro()];
 			bucket_D &b_D = bl_D->buckets[expand_bucket.get_ro()];
@@ -1729,10 +1729,10 @@ RETRY_REHASH:
 							dst_b1.slots[j].x.partial = partial;
 							dst_b1.slots[j].x.valid = 1;
 							
-							dst_b1.slots[j].hv = hv;
-							dst_b1.slots[j].x.partial = partial;
-							dst_b1.slots[j].x.version = v;
-							dst_b1.slots[j].x.valid = 1;
+							dst_b1_D.slots[j].hv = hv;
+							dst_b1_D.slots[j].x.partial = partial;
+							dst_b1_D.slots[j].x.version = v;
+							dst_b1_D.slots[j].x.valid = 1;
 
 							b_D.slots[slot_idx].x.valid = 0;
 							b.slots[slot_idx].p = nullptr;
@@ -1758,10 +1758,10 @@ RETRY_REHASH:
 							dst_b2.slots[j].x.partial = partial;
 							dst_b2.slots[j].x.valid = 1;
 							
-							dst_b2.slots[j].hv = hv;
-							dst_b2.slots[j].x.partial = partial;
-							dst_b2.slots[j].x.version = v;
-							dst_b2.slots[j].x.valid = 1;
+							dst_b2_D.slots[j].hv = hv;
+							dst_b2_D.slots[j].x.partial = partial;
+							dst_b2_D.slots[j].x.version = v;
+							dst_b2_D.slots[j].x.valid = 1;
 
 							b_D.slots[slot_idx].x.valid = 0;
 							b.slots[slot_idx].p = nullptr;
@@ -1808,14 +1808,15 @@ RETRY_REHASH:
 							<< std::endl;
 						pop.persist(&(meta.off), sizeof(uint64_t));
 
-						level_meta_ptr_t_D tmp_meta_copy = new level_meta_D(m_D->fisrt_level, 
+						level_meta_ptr_t_D tmp_meta_copy = new level_meta_D(m_D->first_level, 
 						m_D->last_level->up, levels_left != 2, cache, version);
 						CAS(&meta_D, m_D, tmp_meta_copy);
 
 						levelmap.erase(li.get_address(my_pool_uuid));
 
 						delete_persistent_atomic<bucket[]>(
-						li->buckets, li->capacity.get_ro());
+						li.get_address(my_pool_uuid)->buckets,
+						 li.get_address(my_pool_uuid)->capacity.get_ro());
 						delete_persistent_atomic<level_bucket>(li);
 					
 						delete [] li_D->buckets;
